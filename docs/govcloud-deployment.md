@@ -42,7 +42,7 @@ You need to have the following packages installed on your computer:
 3. [sam (AWS SAM)](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
 4. python 3.11 or later
 5. A local Docker daemon
-6. Python packages for publish.py: `pip install boto3 rich PyYAML botocore setuptools`
+6. Python packages for publish.py: `pip install boto3 typer rich botocore setuptools`
 
 ### Step 1: Generate GovCloud Template
 
@@ -65,7 +65,7 @@ aws cloudformation deploy \
   --template-file .aws-sam/idp-govcloud.yaml \
   --stack-name my-idp-govcloud-stack \
   --region us-gov-west-1 \
-  --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+  --capabilities CAPABILITY_IAM \
   --parameter-overrides \
     IDPPattern="Pattern2 - Packet processing with Textract and Bedrock"
 ```

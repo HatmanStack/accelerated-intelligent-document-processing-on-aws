@@ -20,9 +20,23 @@ The External MCP Agent allows you to:
 - **Real-time Integration**: Tools are available immediately through the IDP web interface
 
 ## Architecture
-An example architecture demonstrating the authentication flow and connections between the MCP Client (running in the IDP application) and an external MCP Server (deployed outside of the IDP application) can be seen below. The `get_client_address` and `send_verification_email` APIs drawn are just for demonstration purposes.
 
-![Architecture Diagram](../images/IDP-external-mcp-example.drawio.png)
+```
+┌─────────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
+│   IDP Solution      │    │   Your AWS Account   │    │   Your MCP Server   │
+│                     │    │                      │    │                     │
+│ ┌─────────────────┐ │    │ ┌──────────────────┐ │    │ ┌─────────────────┐ │
+│ │ External MCP    │ │    │ │ AWS Cognito      │ │    │ │ Custom Tools    │ │
+│ │ Agent           │◄┼────┼─┤ User Pool        │◄┼────┼─┤ - Calculator    │ │
+│ │                 │ │    │ │                  │ │    │ │ - Weather API   │ │
+│ └─────────────────┘ │    │ └──────────────────┘ │    │ │ - Database      │ │
+│                     │    │                      │    │ │ - Custom Logic  │ │
+│ ┌─────────────────┐ │    │                      │    │ └─────────────────┘ │
+│ │ AWS Secrets     │ │    │                      │    │                     │
+│ │ Manager         │ │    │                      │    │                     │
+│ └─────────────────┘ │    │                      │    │                     │
+└─────────────────────┘    └──────────────────────┘    └─────────────────────┘
+```
 
 ## Prerequisites
 

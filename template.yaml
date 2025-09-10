@@ -6114,10 +6114,8 @@ Resources:
                 - echo `ls -altr`
                 - echo `pwd`
                 - echo Installing NodeJS
-                - n 18.20.4
-                - npm install -g npm@10.7.0
-                - echo Installing Web UI dependencies
-                - npm install
+                - n 20.19.5
+                - npm ci
             build:
               commands:
                 - echo Build started on `date`
@@ -6156,28 +6154,28 @@ Resources:
             Value: !Ref WebUIBucket
           - Name: CLOUDFRONT_DISTRIBUTION_ID
             Value: !Ref CloudFrontDistribution
-            # These REACT_APP_ variables are used by the web ui in the
+            # These VITE_ variables are used by the web ui in the
             # aws-exports.js Amplify config. The values are embedded in the
             # code at build time. See:
-            # https://create-react-app.dev/docs/adding-custom-environment-variables/
-          - Name: REACT_APP_SETTINGS_PARAMETER
+            # https://vitejs.dev/guide/env-and-mode.html
+          - Name: VITE_SETTINGS_PARAMETER
             Value: !Ref SettingsParameter
-          - Name: REACT_APP_USER_POOL_ID
+          - Name: VITE_USER_POOL_ID
             Value: !Ref UserPool
-          - Name: REACT_APP_USER_POOL_CLIENT_ID
+          - Name: VITE_USER_POOL_CLIENT_ID
             Value: !Ref UserPoolClient
-          - Name: REACT_APP_IDENTITY_POOL_ID
+          - Name: VITE_IDENTITY_POOL_ID
             Value: !Ref IdentityPool
-          - Name: REACT_APP_APPSYNC_GRAPHQL_URL
+          - Name: VITE_APPSYNC_GRAPHQL_URL
             Value: !GetAtt GraphQLApi.GraphQLUrl
-          - Name: REACT_APP_AWS_REGION
+          - Name: VITE_AWS_REGION
             Value: !Ref AWS::Region
-          - Name: REACT_APP_SHOULD_HIDE_SIGN_UP
+          - Name: VITE_SHOULD_HIDE_SIGN_UP
             Value: !If
               - ShouldAllowSignUpEmailDomain
               - "false"
               - "true"
-          - Name: REACT_APP_CLOUDFRONT_DOMAIN
+          - Name: VITE_CLOUDFRONT_DOMAIN
             Value: !Sub "https://${CloudFrontDistribution.DomainName}/"
       TimeoutInMinutes: 30
 
@@ -6424,12 +6422,12 @@ Outputs:
   WebUITestEnvFile:
     Description: Copy to create .env file for local UI testing
     Value: !Sub |-
-      REACT_APP_USER_POOL_ID=${UserPool}
-      REACT_APP_USER_POOL_CLIENT_ID=${UserPoolClient}
-      REACT_APP_IDENTITY_POOL_ID=${IdentityPool}
-      REACT_APP_APPSYNC_GRAPHQL_URL=${GraphQLApi.GraphQLUrl}
-      REACT_APP_AWS_REGION=${AWS::Region}
-      REACT_APP_SETTINGS_PARAMETER=${SettingsParameter}
+      VITE_USER_POOL_ID=${UserPool}
+      VITE_USER_POOL_CLIENT_ID=${UserPoolClient}
+      VITE_IDENTITY_POOL_ID=${IdentityPool}
+      VITE_APPSYNC_GRAPHQL_URL=${GraphQLApi.GraphQLUrl}
+      VITE_AWS_REGION=${AWS::Region}
+      VITE_SETTINGS_PARAMETER=${SettingsParameter}
   ExternalMCPAgentsSecretConsoleURL:
     Description: External MCP Agents secret console URL - configure MCP server credentials here (JSON array format)
     Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/secretsmanager/secret?name=${AWS::StackName}/external-mcp-agents/credentials&region=${AWS::Region}"

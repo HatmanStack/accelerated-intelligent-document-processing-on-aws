@@ -1213,8 +1213,12 @@ except Exception as e:
         """Build and package main template with smart detection"""
         try:
             self.console.print("[bold cyan]BUILDING main[/bold cyan]")
-            # Main template needs rebuilding, if any component needs rebuilding
-            if components_needing_rebuild:
+            # Check if main template needs rebuilding
+            main_needs_build = any(
+                comp["component"] == "main" for comp in components_needing_rebuild
+            )
+
+            if main_needs_build:
                 self.console.print("[yellow]Main template needs rebuilding[/yellow]")
                 # Validate Python syntax in src directory before building
                 if not self._validate_python_syntax("src"):
@@ -1343,7 +1347,7 @@ except Exception as e:
             ]
 
             for s3_key, description in templates:
-                if components_needing_rebuild:
+                if main_needs_build:
                     if not os.path.exists(packaged_template_path):
                         self.console.print(
                             f"[red]Error: Packaged template not found at {packaged_template_path}[/red]"

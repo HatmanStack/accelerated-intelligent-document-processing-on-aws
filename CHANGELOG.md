@@ -5,14 +5,6 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
-### Added
-- **Windows WSL Development Environment Setup Guide**
-  - Added WSL-based development environment setup guide for Windows developers in `docs/setup-development-env-WSL.md`
-  - **Key Features**: Automated setup script (`wsl_setup.sh`) for quick installation of Git, Python, Node.js, AWS CLI, and SAM CLI
-  - **Integrated Workflow**: Development setup combining Windows tools (VS Code, browsers) with native Linux environment
-  - **Target Use Cases**: Windows developers needing Linux compatibility without Docker Desktop or VM overhead
-
-
 ## [0.3.14]
 
 ### Added

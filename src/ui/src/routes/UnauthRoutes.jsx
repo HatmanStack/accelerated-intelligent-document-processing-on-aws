@@ -9,7 +9,7 @@ import { Authenticator } from '@aws-amplify/ui-react';
 import { LOGIN_PATH, LOGOUT_PATH, REDIRECT_URL_PARAM } from './constants';
 
 // this is set at build time depending on the AllowedSignUpEmailDomain CloudFormation parameter
-const { REACT_APP_SHOULD_HIDE_SIGN_UP = 'true' } = process.env;
+const VITE_SHOULD_HIDE_SIGN_UP = import.meta.env.VITE_SHOULD_HIDE_SIGN_UP || 'true';
 
 const AuthHeader = () => (
   <h1 style={{ textAlign: 'center', margin: '2rem 0' }}>Welcome to GenAI Intelligent Document Processing!</h1>
@@ -34,7 +34,7 @@ const UnauthRoutes = ({ location }) => (
           },
         }}
         signUpAttributes={['email']}
-        hideSignUp={REACT_APP_SHOULD_HIDE_SIGN_UP === 'true'}
+        hideSignUp={VITE_SHOULD_HIDE_SIGN_UP === 'true'}
       />
     </Route>
     <Route path={LOGOUT_PATH}>

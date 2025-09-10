@@ -9,17 +9,17 @@ The values may be found in the Outputs of the GenAIIDP stack under `WebUITestEnv
 Example contents of `.env` file:
 
 ```
-  REACT_APP_USER_POOL_ID=us-west-2_XXXXXXXXX
-  REACT_APP_USER_POOL_CLIENT_ID=XXXXXXXXXXXXXXXXXXXXXXXXXX
-  REACT_APP_IDENTITY_POOL_ID=us-west-2:XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
-  REACT_APP_APPSYNC_GRAPHQL_URL=https://XXXXXXXXXX.appsync-api.us-west-2.amazonaws.com/graphql
-  REACT_APP_AWS_REGION=us-west-2
-  REACT_APP_SETTINGS_PARAMETER=CFN-IDPSettingsParameter-XXXXXXXXXXXX
+  VITE_USER_POOL_ID=us-west-2_XXXXXXXXX
+  VITE_USER_POOL_CLIENT_ID=XXXXXXXXXXXXXXXXXXXXXXXXXX
+  VITE_IDENTITY_POOL_ID=us-west-2:XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+  VITE_APPSYNC_GRAPHQL_URL=https://XXXXXXXXXX.appsync-api.us-west-2.amazonaws.com/graphql
+  VITE_AWS_REGION=us-west-2
+  VITE_SETTINGS_PARAMETER=CFN-IDPSettingsParameter-XXXXXXXXXXXX
 ```
 
 
 
-2. Make sure you have NodeJS 16+ installed.
+2. Make sure you have NodeJS 20+ installed.
 3. Run `npm install` to install dependencies
 4. Run `npm run start` to start the local development mode.
 5. Open [http://localhost:3000](http://localhost:3000) to view it in the browser.
@@ -29,9 +29,9 @@ Default React App Readme Below:
 
 -------------------------------------------
 
-# Getting Started with Create React App
+# Getting Started with Vite
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This project uses [Vite](https://vitejs.dev/) as the build tool and development server.
 
 ## Available Scripts
 

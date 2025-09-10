@@ -196,11 +196,49 @@ payload = {
 
 Pattern-1 supports Human-in-the-Loop (HITL) review capabilities using Amazon SageMaker Augmented AI (A2I). This feature allows human reviewers to validate and correct extracted information when the system's confidence falls below a specified threshold.
 
-**Pattern-1 Specific Configuration:**
-- `EnableHITL`: Boolean parameter to enable/disable the HITL feature
-- `Pattern1 - Existing Private Workforce ARN`: Optional parameter to use existing private workforce
+#### HITL Workflow
+1. **Automatic Triggering**: 
+   - HITL is triggered when the feature is enabled in your configuration
+   - Extraction confidence score falls below your configured confidence threshold
+   - The system creates a human review task in SageMaker A2I
 
-For comprehensive HITL documentation including workflow details, configuration steps, best practices, and troubleshooting, see the [Human-in-the-Loop Review Guide](./human-review.md). 
+2. **Review Process**:
+   - Reviewers access the SageMaker A2I Review Portal (URL available in CloudFormation output `SageMakerA2IReviewPortalURL`)
+   - Login credentials are the same as those used for the GenAI IDP portal (if you want to use your own Private work team, you can provide your existing private workforce work team arn as a input parameter for `Pattern1 - Existing Private Workforce ARN`)
+   - Extracted key-value pairs are presented for validation and correction
+   - Reviewers validate correct extractions or make necessary corrections
+   - After review, corrections are submitted with the "Submit" button
+
+3. **Result Integration**:
+   - Corrected key-value pairs automatically update the source results
+   - The document processing workflow continues with the human-verified data
+
+<img src="../../images/hitl_a2i_workflow.png" alt="HITL Flow diagram" width="800">
+
+#### Configuration
+- `EnableHITL`: Boolean parameter to enable/disable the HITL feature
+- **Confidence Threshold**: Configured through the Web UI Portal Configuration tab under "Assessment & HITL Configuration" section. This numeric value (0.0-1.0) determines when human review is triggered based on extraction confidence scores.
+
+#### Configuring Confidence Threshold
+To set the confidence threshold for HITL triggering:
+
+1. **Access the Web UI**: Open the Web UI URL from your CloudFormation stack outputs
+2. **Navigate to Configuration**: Click on the "Configuration" tab in the navigation menu
+3. **Find Assessment & HITL Section**: Scroll to the "Assessment & HITL Configuration" section
+4. **Set Confidence Threshold**: 
+   - Enter a value between 0.0-1.0 (e.g., 0.8 for 80% confidence threshold)
+   - Fields with confidence scores below this threshold will trigger HITL review
+5. **Save Configuration**: Click "Save" to apply the changes
+
+The confidence threshold is stored as a configuration parameter and automatically applied to new document processing without requiring stack redeployment.
+
+#### Best Practices
+- Regularly check the Review Portal for pending tasks to avoid processing delays
+- Establish consistent correction guidelines if multiple reviewers are involved
+
+#### Known Limitations
+  - Current version of SageMaker A2I cannot provide direct hyperlink to respective document tasks. When reviewer clicks on review document URL and start working, review portal will start displating all review tasks. Reviewer cannot pick specific task and start working. 
+  - Updating SageMaker A2I Template and workflow performs deletion on A2I flow definition, A2I custom template and recreate the resources via lambda function. Update A2I resources through Python SDK is not allowed. 
 
 ## Best Practices
 1. **BDA Project Configuration**:

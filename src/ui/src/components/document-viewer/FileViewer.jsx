@@ -139,7 +139,7 @@ const FileViewer = ({ objectKey }) => {
         throw new Error('Input bucket not configured');
       }
 
-      const region = process.env.REACT_APP_AWS_REGION;
+      const region = import.meta.env.VITE_AWS_REGION;
       const s3Url = `https://${settings.InputBucket}.s3.${region}.amazonaws.com/${objectKey}`;
 
       // First fetch the content via GraphQL to determine content type

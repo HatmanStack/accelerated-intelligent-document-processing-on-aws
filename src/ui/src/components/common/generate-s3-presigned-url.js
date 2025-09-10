@@ -61,7 +61,7 @@ const generateS3PresignedUrl = async (url, credentials, options = {}) => {
     }
 
     // Extract region from env
-    const region = process.env.REACT_APP_AWS_REGION;
+    const region = import.meta.env.VITE_AWS_REGION;
 
     // Construct the canonical S3 URL with properly encoded key
     const encodedKey = key

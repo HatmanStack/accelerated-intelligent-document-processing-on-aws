@@ -104,11 +104,6 @@ The "Chat with Document" feature is available at the bottom of the Document Deta
 
 Your chat history will be saved as you continue your chat but if you leave the document details screen, your chat history is erased. This feature uses prompt caching for the document contents for repeated chat requests for each document.
 
-See the feature in action in this video:  
- 
-https://github.com/user-attachments/assets/50607084-96d6-4833-85a6-3dc0e72b28ac
-
-
 ### How to Use
 
 1. Navigate to a document's detail page and scroll to the bottom
@@ -158,12 +153,12 @@ To run the web UI locally for development:
 1. Navigate to the `/ui` directory
 2. Create a `.env` file using the `WebUITestEnvFile` output from the CloudFormation stack:
 ```
-REACT_APP_USER_POOL_ID=<value>
-REACT_APP_USER_POOL_CLIENT_ID=<value>
-REACT_APP_IDENTITY_POOL_ID=<value>
-REACT_APP_APPSYNC_GRAPHQL_URL=<value>
-REACT_APP_AWS_REGION=<value>
-REACT_APP_SETTINGS_PARAMETER=<value>
+VITE_USER_POOL_ID=<value>
+VITE_USER_POOL_CLIENT_ID=<value>
+VITE_IDENTITY_POOL_ID=<value>
+VITE_APPSYNC_GRAPHQL_URL=<value>
+VITE_AWS_REGION=<value>
+VITE_SETTINGS_PARAMETER=<value>
 ```
 3. Install dependencies: `npm install`
 4. Start the development server: `npm run start`
