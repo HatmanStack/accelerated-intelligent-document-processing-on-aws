@@ -1,2 +1,13 @@
 python-docx2txt
 PyMuPDF
+striprtf
+odfpy
+textract
+markdown
+beautifulsoup4
+PyYAML
+docutils
+asciidoctor-python
+EbookLib
+mobi
+pylatexenc

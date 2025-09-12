@@ -15,6 +15,28 @@ import docx2txt
 import fitz  # PyMuPDF
 from urllib.parse import urlparse
 import uuid
+import zipfile
+import xml.etree.ElementTree as ET
+
+# Rich Text and Word Processing
+from striprtf.striprtf import rtf_to_text
+from odf import text, teletype
+from odf.opendocument import load
+import textract
+
+# Markup and Structured Text
+import markdown
+from bs4 import BeautifulSoup
+import yaml
+import csv
+from docutils.core import publish_parts
+import asciidoctor
+from pylatexenc.latex2text import LatexNodes2Text
+
+# Ebook formats
+import ebooklib
+from ebooklib import epub
+from mobi import Mobi
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -82,22 +104,215 @@ class Document:
 
 # --- End Mock idp_common.models ---
 
-
 def extract_text_from_docx(file_path):
     """Extracts text from a .docx file."""
-    return docx2txt.process(file_path)
+    try:
+        return docx2txt.process(file_path)
+    except Exception as e:
+        logger.error(f"Error extracting text from .docx file: {e}")
+        return ""
 
 def extract_text_from_pdf(file_path):
     """Extracts text from a .pdf file."""
-    doc = fitz.open(file_path)
-    text = "".join(page.get_text() for page in doc)
-    doc.close()
-    return text
+    try:
+        doc = fitz.open(file_path)
+        text = "".join(page.get_text() for page in doc)
+        doc.close()
+        return text
+    except Exception as e:
+        logger.error(f"Error extracting text from .pdf file: {e}")
+        return ""
 
 def extract_text_from_txt(file_path):
-    """Extracts text from a .txt or .md file."""
-    with open(file_path, 'r', encoding='utf-8') as f:
-        return f.read()
+    """Extracts text from a plain text file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        logger.error(f"Error extracting text from .txt file: {e}")
+        return ""
+
+def extract_text_from_rtf(file_path):
+    """Extracts text from an .rtf file."""
+    try:
+        with open(file_path, 'r') as f:
+            return rtf_to_text(f.read())
+    except Exception as e:
+        logger.error(f"Error extracting text from .rtf file: {e}")
+        return ""
+
+def extract_text_from_odt(file_path):
+    """Extracts text from an .odt file."""
+    try:
+        textdoc = load(file_path)
+        all_paras = textdoc.getElementsByType(text.P)
+        return "\n".join(teletype.extractText(p) for p in all_paras)
+    except Exception as e:
+        logger.error(f"Error extracting text from .odt file: {e}")
+        return ""
+
+def extract_text_from_doc(file_path):
+    """
+    Extracts text from a .doc file.
+    Note: .wpd and .wps are not officially supported due to lack of reliable python libraries.
+    `textract` may handle them but it is not guaranteed.
+    """
+    try:
+        return textract.process(file_path).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Error extracting text from .doc file: {e}")
+        return ""
+
+def extract_text_from_pages(file_path):
+    """
+    Extracts text from an Apple Pages file.
+    Note: This is a best-effort implementation and may not work for all .pages files
+    due to the complexity of the format.
+    """
+    text = ""
+    try:
+        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            for file in zip_ref.namelist():
+                if file.endswith('.xml'):
+                    with zip_ref.open(file) as xml_file:
+                        tree = ET.parse(xml_file)
+                        root = tree.getroot()
+                        for elem in root.iter():
+                            if elem.text:
+                                text += elem.text.strip() + "\n"
+    except Exception as e:
+        logger.error(f"Error extracting text from .pages file: {e}")
+    return text
+
+def extract_text_from_html(file_path):
+    """Extracts text from an .html file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            soup = BeautifulSoup(f, 'html.parser')
+            return soup.get_text()
+    except Exception as e:
+        logger.error(f"Error extracting text from .html file: {e}")
+        return ""
+
+def extract_text_from_xml(file_path):
+    """Extracts text from an .xml file."""
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        text = ""
+        for elem in root.iter():
+            if elem.text:
+                text += elem.text.strip() + " "
+        return text
+    except Exception as e:
+        logger.error(f"Error extracting text from .xml file: {e}")
+        return ""
+
+def extract_text_from_markdown(file_path):
+    """Extracts text from a .md file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            html = markdown.markdown(f.read())
+            soup = BeautifulSoup(html, 'html.parser')
+            return soup.get_text()
+    except Exception as e:
+        logger.error(f"Error extracting text from .md file: {e}")
+        return ""
+
+def extract_text_from_json(file_path):
+    """Extracts text from a .json file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return json.dumps(data, indent=2)
+    except Exception as e:
+        logger.error(f"Error extracting text from .json file: {e}")
+        return ""
+
+def extract_text_from_yaml(file_path):
+    """Extracts text from a .yaml file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+            return yaml.dump(data)
+    except Exception as e:
+        logger.error(f"Error extracting text from .yaml file: {e}")
+        return ""
+
+def extract_text_from_csv(file_path):
+    """Extracts text from a .csv file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            return "\n".join([",".join(row) for row in reader])
+    except Exception as e:
+        logger.error(f"Error extracting text from .csv file: {e}")
+        return ""
+
+def extract_text_from_tsv(file_path):
+    """Extracts text from a .tsv file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f, delimiter='\t')
+            return "\n".join(["\t".join(row) for row in reader])
+    except Exception as e:
+        logger.error(f"Error extracting text from .tsv file: {e}")
+        return ""
+
+def extract_text_from_rst(file_path):
+    """Extracts text from a .rst file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            parts = publish_parts(source=f.read(), writer_name='html')
+            html = parts['html_body']
+            soup = BeautifulSoup(html, 'html.parser')
+            return soup.get_text()
+    except Exception as e:
+        logger.error(f"Error extracting text from .rst file: {e}")
+        return ""
+
+def extract_text_from_asciidoc(file_path):
+    """Extracts text from an .asciidoc file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            html = asciidoctor.convert(f.read(), backend='html5')
+            soup = BeautifulSoup(html, 'html.parser')
+            return soup.get_text()
+    except Exception as e:
+        logger.error(f"Error extracting text from .asciidoc file: {e}")
+        return ""
+
+def extract_text_from_epub(file_path):
+    """Extracts text from an .epub file."""
+    try:
+        book = epub.read_epub(file_path)
+        text = ""
+        for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+            soup = BeautifulSoup(item.get_content(), 'html.parser')
+            text += soup.get_text() + "\n"
+        return text
+    except Exception as e:
+        logger.error(f"Error extracting text from .epub file: {e}")
+        return ""
+
+def extract_text_from_mobi(file_path):
+    """Extracts text from a .mobi file."""
+    try:
+        book = Mobi(file_path)
+        book.parse()
+        return book.get_text()
+    except Exception as e:
+        logger.error(f"Error extracting text from .mobi file: {e}")
+        return ""
+
+def extract_text_from_tex(file_path):
+    """Extracts text from a .tex file."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return LatexNodes2Text().latex_to_text(f.read())
+    except Exception as e:
+        logger.error(f"Error extracting text from .tex file: {e}")
+        return ""
 
 def build_document_structure(raw_text, s3_uri, doc_id, execution_arn):
     """Builds a structured Document object from raw text."""
@@ -137,23 +352,58 @@ def handler(event, context):
     file_extension = os.path.splitext(file_name)[1].lower()
     
     tmp_path = f"/tmp/{file_name}"
+
+    # Dispatcher for extraction functions
+    extraction_dispatcher = {
+        '.docx': extract_text_from_docx,
+        '.pdf': extract_text_from_pdf,
+        '.txt': extract_text_from_txt,
+        '.rtf': extract_text_from_rtf,
+        '.odt': extract_text_from_odt,
+        '.doc': extract_text_from_doc,
+        '.pages': extract_text_from_pages,
+        '.html': extract_text_from_html,
+        '.htm': extract_text_from_html,
+        '.xml': extract_text_from_xml,
+        '.md': extract_text_from_markdown,
+        '.markdown': extract_text_from_markdown,
+        '.json': extract_text_from_json,
+        '.yaml': extract_text_from_yaml,
+        '.yml': extract_text_from_yaml,
+        '.csv': extract_text_from_csv,
+        '.tsv': extract_text_from_tsv,
+        '.rst': extract_text_from_rst,
+        '.asciidoc': extract_text_from_asciidoc,
+        '.adoc': extract_text_from_asciidoc,
+        '.epub': extract_text_from_epub,
+        '.mobi': extract_text_from_mobi,
+        '.tex': extract_text_from_tex,
+        # Plain text formats
+        '.py': extract_text_from_txt,
+        '.js': extract_text_from_txt,
+        '.java': extract_text_from_txt,
+        '.sql': extract_text_from_txt,
+        '.ini': extract_text_from_txt,
+        '.conf': extract_text_from_txt,
+        '.config': extract_text_from_txt,
+        '.log': extract_text_from_txt,
+        '.env': extract_text_from_txt,
+    }
     
     try:
         s3.download_file(bucket, key, tmp_path)
         
-        raw_text = ""
-        if file_extension == '.docx':
-            raw_text = extract_text_from_docx(tmp_path)
-        elif file_extension == '.pdf':
-            raw_text = extract_text_from_pdf(tmp_path)
-        elif file_extension in ['.txt', '.md']:
-            raw_text = extract_text_from_txt(tmp_path)
+        extraction_function = extraction_dispatcher.get(file_extension)
+
+        if extraction_function:
+            raw_text = extraction_function(tmp_path)
         else:
-            raise ValueError(f"Unsupported file type for text extraction: {file_extension}")
+            logger.warning(f"Unsupported file type: {file_extension}. Treating as plain text.")
+            raw_text = extract_text_from_txt(tmp_path)
 
         os.remove(tmp_path)
 
-        # Save the raw text to a file in the working bucket for the S3 backend path
+        # Save the raw text to a file in the working bucket
         raw_text_output_key = f"text/{doc_id}/{os.path.splitext(file_name)[0]}.txt"
         s3.put_object(
             Bucket=WORKING_BUCKET,
@@ -166,8 +416,6 @@ def handler(event, context):
         structured_document = build_document_structure(raw_text, s3_uri, doc_id, execution_arn)
         structured_document.raw_text_s3_uri = raw_text_s3_uri
         
-        # The output of this function should be compatible with what OCRStep produces.
-        # It should be a dictionary containing the serialized document.
         return {
             "document": structured_document.to_dict()
         }
