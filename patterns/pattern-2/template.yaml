@@ -115,6 +115,23 @@ Parameters:
     AllowedPattern: "^(|arn:aws[a-z-]*:iam::[0-9]{12}:policy/.+)$"
     ConstraintDescription: Must be empty or a valid IAM policy ARN
 
+  TextPathEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Enable the TEXT_PATH workflow for text-native documents."
+
+  VectorBackend:
+    Type: String
+    Default: "None"
+    AllowedValues:
+      - "S3"
+      - "BedrockKB"
+      - "None"
+    Description: "Specify the vector backend to use. S3 for vector storage in S3, BedrockKB to integrate with Bedrock Knowledge Base, or None."
+
 Conditions:
   HasGuardrailConfig: !And [!Not [!Equals [!Ref BedrockGuardrailId, ""]], !Not [!Equals [!Ref BedrockGuardrailVersion, ""]]]
   HasCustomClassificationModelARN: !Not [!Equals [!Ref CustomClassificationModelARN, ""]]
@@ -122,8 +139,183 @@ Conditions:
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
   IsHITLEnabled: !Equals [!Ref EnableHITL, "true"]
   HasAppSyncApi: !Not [!Equals [!Ref AppSyncApiArn, ""]]
+  IsTextPathEnabled: !Equals [!Ref TextPathEnabled, "true"]
+  IsS3BackendEnabled: !Equals [!Ref VectorBackend, "S3"]
 
 Resources:
+
+  DocumentRouterFunction:
+    Type: AWS::Serverless::Function
+    Condition: IsTextPathEnabled
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      CodeUri: src/document_router_function/
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          IS_TEXT_PATH_ENABLED: !Ref TextPathEnabled
+      LoggingConfig:
+        LogGroup: !Ref DocumentRouterFunctionLogGroup
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref InputBucket
+        - Statement:
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: !Ref CustomerManagedEncryptionKeyArn
+
+  DocumentRouterFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsTextPathEnabled
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/DocumentRouterFunction"
+      RetentionInDays: !Ref LogRetentionDays
+
+  TextExtractorFunction:
+    Type: AWS::Serverless::Function
+    Condition: IsTextPathEnabled
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      CodeUri: src/text_extractor_function/
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 120
+      MemorySize: 512
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          WORKING_BUCKET: !Ref WorkingBucket
+      LoggingConfig:
+        LogGroup: !Ref TextExtractorFunctionLogGroup
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref InputBucket
+        - S3CrudPolicy:
+            BucketName: !Ref WorkingBucket
+        - Statement:
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: !Ref CustomerManagedEncryptionKeyArn
+
+  TextExtractorFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsTextPathEnabled
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/TextExtractorFunction"
+      RetentionInDays: !Ref LogRetentionDays
+
+  TextProcessorAndChunkerFunction:
+    Type: AWS::Serverless::Function
+    Condition: IsS3BackendEnabled
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      CodeUri: src/text_processor_function/
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+      LoggingConfig:
+        LogGroup: !Ref TextProcessorAndChunkerFunctionLogGroup
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref WorkingBucket
+        - Statement:
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: !Ref CustomerManagedEncryptionKeyArn
+
+  TextProcessorAndChunkerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsS3BackendEnabled
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/TextProcessorAndChunkerFunction"
+      RetentionInDays: !Ref LogRetentionDays
+
+  EmbeddingGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Condition: IsS3BackendEnabled
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      CodeUri: src/embedding_generator_function/
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 300
+      MemorySize: 1024
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          BEDROCK_MODEL_ID: "amazon.titan-embed-text-v1"
+      LoggingConfig:
+        LogGroup: !Ref EmbeddingGeneratorFunctionLogGroup
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+          - Effect: Allow
+            Action: bedrock:InvokeModel
+            Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v1"
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: !Ref CustomerManagedEncryptionKeyArn
+
+  EmbeddingGeneratorFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsS3BackendEnabled
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/EmbeddingGeneratorFunction"
+      RetentionInDays: !Ref LogRetentionDays
+
+  VectorStorageWriterFunction:
+    Type: AWS::Serverless::Function
+    Condition: IsS3BackendEnabled
+    Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
+      CodeUri: src/vector_storage_writer_function/
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          VECTORS_BUCKET: !Ref OutputBucket
+      LoggingConfig:
+        LogGroup: !Ref VectorStorageWriterFunctionLogGroup
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3CrudPolicy:
+            BucketName: !Ref OutputBucket
+        - Statement:
+          - Effect: Allow
+            Action:
+              - kms:GenerateDataKey
+            Resource: !Ref CustomerManagedEncryptionKeyArn
+
+  VectorStorageWriterFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsS3BackendEnabled
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      LogGroupName: !Sub "/${AWS::StackName}/lambda/VectorStorageWriterFunction"
+      RetentionInDays: !Ref LogRetentionDays
 
   # JSON Schema which defines the structure of the pattern configuration settings
   # used by the UI to allow the configuration to be inspected and customized.
@@ -1644,6 +1836,12 @@ Resources:
         HITLStatusUpdateFunctionArn: !GetAtt HITLStatusUpdateFunction.Arn
         SummarizationLambdaArn: !GetAtt SummarizationFunction.Arn
         OutputBucket: !Ref OutputBucket
+        StateMachineStartAt: !If [IsTextPathEnabled, "DocumentRouterStep", "OCRStep"]
+        DocumentRouterFunctionArn: !If [IsTextPathEnabled, !GetAtt DocumentRouterFunction.Arn, ""]
+        TextExtractorFunctionArn: !If [IsTextPathEnabled, !GetAtt TextExtractorFunction.Arn, ""]
+        TextProcessorAndChunkerFunctionArn: !If [IsS3BackendEnabled, !GetAtt TextProcessorAndChunkerFunction.Arn, ""]
+        EmbeddingGeneratorFunctionArn: !If [IsS3BackendEnabled, !GetAtt EmbeddingGeneratorFunction.Arn, ""]
+        VectorStorageWriterFunctionArn: !If [IsS3BackendEnabled, !GetAtt VectorStorageWriterFunction.Arn, ""]
       Logging:
         Level: ALL
         IncludeExecutionData: true
@@ -1652,6 +1850,31 @@ Resources:
       Policies:
         - LambdaInvokePolicy:
             FunctionName: !Ref OCRFunction
+        - !If
+          - IsTextPathEnabled
+          - LambdaInvokePolicy:
+              FunctionName: !Ref DocumentRouterFunction
+          - !Ref AWS::NoValue
+        - !If
+          - IsTextPathEnabled
+          - LambdaInvokePolicy:
+              FunctionName: !Ref TextExtractorFunction
+          - !Ref AWS::NoValue
+        - !If
+          - IsS3BackendEnabled
+          - LambdaInvokePolicy:
+              FunctionName: !Ref TextProcessorAndChunkerFunction
+          - !Ref AWS::NoValue
+        - !If
+          - IsS3BackendEnabled
+          - LambdaInvokePolicy:
+              FunctionName: !Ref EmbeddingGeneratorFunction
+          - !Ref AWS::NoValue
+        - !If
+          - IsS3BackendEnabled
+          - LambdaInvokePolicy:
+              FunctionName: !Ref VectorStorageWriterFunction
+          - !Ref AWS::NoValue
         - LambdaInvokePolicy:
             FunctionName: !Ref ClassificationFunction
         - LambdaInvokePolicy:

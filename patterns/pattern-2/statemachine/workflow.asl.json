@@ -1,6 +1,70 @@
 {
-    "StartAt": "OCRStep",
+    "StartAt": "${StateMachineStartAt}",
     "States": {
+        "DocumentRouterStep": {
+            "Type": "Task",
+            "Resource": "${DocumentRouterFunctionArn}",
+            "Parameters": {
+                "execution_arn.$": "$$.Execution.Id",
+                "document.$": "$.document"
+            },
+            "ResultPath": "$",
+            "Next": "RouteDocument"
+        },
+        "RouteDocument": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.path",
+                    "StringEquals": "TEXT_PATH",
+                    "Next": "TextExtractorStep"
+                }
+            ],
+            "Default": "OCRStep"
+        },
+        "TextExtractorStep": {
+            "Type": "Task",
+            "Resource": "${TextExtractorFunctionArn}",
+            "Parameters": {
+                "execution_arn.$": "$$.Execution.Id",
+                "document.$": "$.document"
+            },
+            "ResultPath": "$.OCRResult",
+            "Next": "BackendChoice"
+        },
+        "BackendChoice": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.vector_backend",
+                    "StringEquals": "S3",
+                    "Next": "TextProcessorAndChunkerStep"
+                }
+            ],
+            "Default": "ClassificationStep"
+        },
+        "TextProcessorAndChunkerStep": {
+            "Type": "Task",
+            "Resource": "${TextProcessorAndChunkerFunctionArn}",
+            "ResultPath": "$",
+            "Next": "EmbeddingGeneratorStep"
+        },
+        "EmbeddingGeneratorStep": {
+            "Type": "Task",
+            "Resource": "${EmbeddingGeneratorFunctionArn}",
+            "ResultPath": "$",
+            "Next": "VectorStorageWriterStep"
+        },
+        "VectorStorageWriterStep": {
+            "Type": "Task",
+            "Resource": "${VectorStorageWriterFunctionArn}",
+            "ResultPath": "$",
+            "Next": "S3VectorBackendComplete"
+        },
+        "S3VectorBackendComplete": {
+            "Type": "Pass",
+            "End": true
+        },
         "OCRStep": {
             "Type": "Task",
             "Resource": "${OCRFunctionArn}",
