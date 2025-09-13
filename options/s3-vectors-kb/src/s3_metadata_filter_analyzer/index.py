@@ -10,6 +10,7 @@ from collections import defaultdict
 from idp_common.s3vectors.client import S3VectorsClient
 from idp_common.bedrock.client import BedrockClient
 from idp_common.s3 import get_s3_client
+from idp_common.dynamodb.client import DynamoDBClient
 
 # --- Constants ---
 METADATA_ANALYSIS_SAMPLE_SIZE = 1000  # Max vectors to sample for analysis
@@ -26,6 +27,33 @@ s3_vectors_client = S3VectorsClient()
 s3_client = get_s3_client()
 lambda_client = boto3.client('lambda')
 bedrock_client = BedrockClient()
+dynamodb_resource = boto3.resource('dynamodb')
+db_table = dynamodb_resource.Table(os.environ.get("S3_VECTORS_CATALOG_TABLE", "s3-vectors-catalog")) # Added default for local testing
+
+def get_all_index_names() -> List[str]:
+    """
+    Gets a list of all S3 vector indexes to be scanned.
+    In simple mode, returns just the default index.
+    In dynamic mode, returns all discovered cluster indexes plus the default.
+    """
+    default_index = os.environ["S3_VECTORS_INDEX_NAME"]
+    try:
+        response = db_table.scan(
+            FilterExpression="begins_with(PK, :pk_prefix)",
+            ExpressionAttributeValues={":pk_prefix": "INDEX#"}
+        )
+        items = response.get('Items', [])
+        if not items:
+            logger.info("No routing index found. Operating in simple mode.")
+            return [default_index]
+
+        cluster_indexes = [item['PK'].split('#', 1)[1] for item in items]
+        all_indexes = list(set(cluster_indexes + [default_index]))
+        logger.info(f"Operating in dynamic mode. Found {len(all_indexes)} indexes to scan: {all_indexes}")
+        return all_indexes
+    except Exception:
+        logger.error("Failed to query for routing index. Falling back to simple mode.", exc_info=True)
+        return [default_index] # Fail safe to simple mode
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
@@ -66,55 +94,57 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
 def analyze_metadata() -> Dict[str, Any]:
     """
-    Scans a sample of vectors to find common metadata fields suitable for filtering.
+    Scans a sample of vectors from all relevant indexes to find common metadata fields.
     """
     field_analysis = defaultdict(lambda: {'count': 0, 'sample_values': set(), 'data_type': None})
+    all_sampled_vectors = []
     
-    try:
-        logger.info(f"Analyzing up to {METADATA_ANALYSIS_SAMPLE_SIZE} vectors from index '{os.environ["S3_VECTORS_INDEX_NAME"]}'...")
-        response = s3_vectors_client.list_vectors(
-            vectorBucketName=os.environ["S3_VECTORS_BUCKET_NAME"],
-            indexName=os.environ["S3_VECTORS_INDEX_NAME"],
-            maxResults=METADATA_ANALYSIS_SAMPLE_SIZE,
-            returnMetadata=True
-        )
-        
-        vectors = response.get('vectors', [])
-        total_vectors = len(vectors)
-        if total_vectors == 0:
-            logger.warning("No vectors found in the index.")
-            return {'total_vectors_sampled': 0, 'filterable_fields': {}}
+    indexes_to_scan = get_all_index_names()
+    sample_per_index = max(1, METADATA_ANALYSIS_SAMPLE_SIZE // len(indexes_to_scan))
 
-        for vector in vectors:
-            for field, value in vector.get('metadata', {}).items():
-                if field not in NON_FILTERABLE_FIELDS:
-                    info = field_analysis[field]
-                    info['count'] += 1
-                    if len(info['sample_values']) < 10: # Keep up to 10 unique sample values
-                        info['sample_values'].add(str(value)) # Convert to string for simplicity
-                    if info['data_type'] is None:
-                        info['data_type'] = type(value).__name__
-        
-        min_occurrence = max(1, total_vectors * MIN_FIELD_OCCURRENCE_RATE)
-        filterable_fields = {
-            field: {
-                'occurrence_rate': round(info['count'] / total_vectors, 2),
-                'sample_values': list(info['sample_values']),
-                'data_type': info['data_type']
-            }
-            for field, info in field_analysis.items() if info['count'] >= min_occurrence
-        }
-        
-        # Sort by occurrence rate and take the top N fields
-        sorted_fields = sorted(filterable_fields.items(), key=lambda item: item[1]['occurrence_rate'], reverse=True)
-        top_fields = dict(sorted_fields[:MAX_FILTERABLE_FIELDS_TO_REPORT])
-        
-        logger.info(f"Found {len(top_fields)} filterable fields meeting the threshold.")
-        return {'total_vectors_sampled': total_vectors, 'filterable_fields': top_fields}
+    for index_name in indexes_to_scan:
+        try:
+            logger.info(f"Analyzing up to {sample_per_index} vectors from index '{index_name}'...")
+            response = s3_vectors_client.list_vectors(
+                vectorBucketName=os.environ["S3_VECTORS_BUCKET_NAME"],
+                indexName=index_name,
+                maxResults=sample_per_index,
+                returnMetadata=True
+            )
+            all_sampled_vectors.extend(response.get('vectors', []))
+        except Exception:
+            logger.warning(f"Could not sample vectors from index '{index_name}'. It might not exist yet.", exc_info=True)
 
-    except Exception:
-        logger.error(f"Failed to analyze metadata from S3 Vectors API.", exc_info=True)
+    total_vectors_sampled = len(all_sampled_vectors)
+    if total_vectors_sampled == 0:
+        logger.warning("No vectors found in any index.")
         return {'total_vectors_sampled': 0, 'filterable_fields': {}}
+
+    for vector in all_sampled_vectors:
+        for field, value in vector.get('metadata', {}).items():
+            if field not in NON_FILTERABLE_FIELDS:
+                info = field_analysis[field]
+                info['count'] += 1
+                if len(info['sample_values']) < 10:
+                    info['sample_values'].add(str(value))
+                if info['data_type'] is None:
+                    info['data_type'] = type(value).__name__
+
+    min_occurrence = max(1, total_vectors_sampled * MIN_FIELD_OCCURRENCE_RATE)
+    filterable_fields = {
+        field: {
+            'occurrence_rate': round(info['count'] / total_vectors_sampled, 2),
+            'sample_values': list(info['sample_values']),
+            'data_type': info['data_type']
+        }
+        for field, info in field_analysis.items() if info['count'] >= min_occurrence
+    }
+
+    sorted_fields = sorted(filterable_fields.items(), key=lambda item: item[1]['occurrence_rate'], reverse=True)
+    top_fields = dict(sorted_fields[:MAX_FILTERABLE_FIELDS_TO_REPORT])
+
+    logger.info(f"Found {len(top_fields)} filterable fields meeting the threshold from {total_vectors_sampled} sampled vectors.")
+    return {'total_vectors_sampled': total_vectors_sampled, 'filterable_fields': top_fields}
 
 
 def _parse_filter_response(response) -> List[Dict[str, Any]]:
@@ -213,7 +243,7 @@ def generate_filter_examples(metadata_analysis: Dict[str, Any]) -> List[Dict[str
 def store_filter_examples(filter_examples: List[Dict[str, Any]]) -> str:
     """Stores the generated filter examples in a versioned and 'latest' S3 object."""
     timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    s3_prefix = f"metadata-filters/{os.environ["S3_VECTORS_INDEX_NAME"]}"
+    s3_prefix = "metadata-filters/global" # Use a generic prefix for system-wide analysis
     versioned_key = f"{s3_prefix}/filter-examples-{timestamp}.json"
     latest_key = f"{s3_prefix}/filter-examples-latest.json"
     

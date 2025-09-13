@@ -3,6 +3,7 @@ import json
 import os
 import logging
 import uuid
+import numpy as np
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone
 from idp_common.bedrock.client import BedrockClient
@@ -26,6 +27,62 @@ s3vectors_client = S3VectorsClient()
 bedrock_client = BedrockClient()
 cloudwatch_client = boto3.client('cloudwatch')
 catalog_table = DynamoDBClient(os.environ["S3_VECTORS_CATALOG_TABLE"])
+dynamodb_resource = boto3.resource('dynamodb')
+db_table = dynamodb_resource.Table(os.environ["S3_VECTORS_CATALOG_TABLE"])
+
+# --- Global Cache ---
+_routing_index_cache = None
+
+def get_routing_index() -> Optional[List[Dict]]:
+    """
+    Loads the routing index from DynamoDB and caches it.
+    Returns None if no index is found, indicating "simple mode".
+    """
+    global _routing_index_cache
+    if _routing_index_cache is not None:
+        return _routing_index_cache
+
+    try:
+        response = db_table.scan(
+            FilterExpression="begins_with(PK, :pk_prefix)",
+            ExpressionAttributeValues={":pk_prefix": "INDEX#"}
+        )
+        items = response.get('Items', [])
+        if not items:
+            _routing_index_cache = [] # Cache empty list to signify dynamic mode is off
+            return None
+
+        # Process items to be usable
+        for item in items:
+            item['centroid'] = np.array(json.loads(item['centroid']))
+
+        _routing_index_cache = items
+        logger.info(f"Successfully loaded and cached routing index with {len(items)} clusters.")
+        return _routing_index_cache
+    except Exception:
+        logger.error("Failed to load routing index from DynamoDB.", exc_info=True)
+        return None # Fail safe to simple mode
+
+def find_top_n_clusters(query_embedding: np.ndarray, routing_index: List[Dict], n: int) -> List[str]:
+    """Finds the top N most similar clusters for a given query embedding."""
+    if not routing_index:
+        return []
+
+    cluster_similarities = []
+    for cluster in routing_index:
+        centroid = cluster['centroid']
+        similarity = np.dot(query_embedding, centroid) / (np.linalg.norm(query_embedding) * np.linalg.norm(centroid))
+        cluster_similarities.append({
+            'name': cluster['PK'].split('#', 1)[1],
+            'similarity': similarity
+        })
+
+    # Sort clusters by similarity score in descending order
+    cluster_similarities.sort(key=lambda x: x['similarity'], reverse=True)
+
+    # Return the names of the top N clusters
+    return [cluster['name'] for cluster in cluster_similarities[:n]]
+
 
 # --- Main Handler ---
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -87,22 +144,40 @@ def process_query_pipeline(query: str, session_id: Optional[str]) -> Dict[str, A
     return response
 
 def fetch_candidates(query_embedding: List[float], base_filter: Optional[Dict]) -> List[Dict]:
-    """Fetches candidate vectors from S3 Vectors using multiple filter slices to improve recall."""
-    slice_filters = [
-        None,  # Unfiltered slice
-        base_filter,
-        compose_filter(base_filter, {'confidence': {'$gte': 0.8}}),
-    ]
-
+    """
+    Fetches candidate vectors from S3 Vectors.
+    Adapts between simple (single-index) and dynamic (multi-index) modes.
+    """
     all_candidates = []
     per_slice_k = min(MAX_RESULTS, 30)
 
-    for filter_config in slice_filters:
-        if filter_config is None and base_filter is None:
-            # Only do unfiltered search if no base filter exists
-            all_candidates.extend(query_s3_vectors(query_embedding, per_slice_k, None))
-        elif filter_config is not None:
-            all_candidates.extend(query_s3_vectors(query_embedding, per_slice_k, filter_config))
+    routing_index = get_routing_index()
+
+    # --- Dynamic Mode: Two-Hop Search ---
+    if routing_index:
+        logger.info("Dynamic mode: Performing two-hop search.")
+        top_n = 2 # Query top 2 clusters + default
+        target_indexes = find_top_n_clusters(np.array(query_embedding), routing_index, n=top_n)
+        target_indexes.append(os.environ["S3_VECTORS_INDEX_NAME"]) # Always query default index for outliers
+
+        logger.info(f"Querying indexes: {target_indexes}")
+        for index_name in set(target_indexes): # Use set to avoid duplicate queries
+            all_candidates.extend(query_s3_vectors(query_embedding, per_slice_k, None, index_name))
+
+    # --- Simple Mode: Original Multi-Slice Approach ---
+    else:
+        logger.info("Simple mode: Performing single-index search.")
+        slice_filters = [
+            None,  # Unfiltered slice
+            base_filter,
+            compose_filter(base_filter, {'confidence': {'$gte': 0.8}}),
+        ]
+        default_index_name = os.environ["S3_VECTORS_INDEX_NAME"]
+        for filter_config in slice_filters:
+            if filter_config is None and base_filter is None:
+                all_candidates.extend(query_s3_vectors(query_embedding, per_slice_k, None, default_index_name))
+            elif filter_config is not None:
+                all_candidates.extend(query_s3_vectors(query_embedding, per_slice_k, filter_config, default_index_name))
 
     # Deduplicate by vector_id, keeping highest score
     seen = {}
@@ -173,12 +248,12 @@ def generate_response(query: str, ranked_candidates: List[Dict], session_context
     return result
 
 # --- S3 Vectors and Bedrock Interactions ---
-def query_s3_vectors(query_vector: List[float], top_k: int, metadata_filter: Optional[Dict]) -> List[Dict]:
+def query_s3_vectors(query_vector: List[float], top_k: int, metadata_filter: Optional[Dict], index_name: str) -> List[Dict]:
     """Queries the S3 Vectors service and normalizes the response."""
     try:
         params = {
             'vectorBucketName': os.environ["S3_VECTORS_BUCKET"],
-            'indexName': os.environ["S3_VECTORS_INDEX_NAME"],
+            'indexName': index_name,
             'queryVector': query_vector,  # Client will handle the float32 formatting
             'topK': top_k,
             'returnMetadata': True,

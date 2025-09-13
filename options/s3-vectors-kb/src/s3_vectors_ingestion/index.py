@@ -3,6 +3,9 @@ import json
 import os
 import logging
 import time
+import numpy as np
+from itertools import groupby
+from operator import itemgetter
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple, Iterator, Any, Union
 from idp_common.bedrock.client import BedrockClient
@@ -26,6 +29,60 @@ s3vectors_client = S3VectorsClient()
 bedrock_client = BedrockClient()
 cloudwatch_client = boto3.client('cloudwatch')
 catalog_table = DynamoDBClient(os.environ["S3_VECTORS_CATALOG_TABLE"])
+dynamodb_resource = boto3.resource('dynamodb')
+db_table = dynamodb_resource.Table(os.environ["S3_VECTORS_CATALOG_TABLE"])
+
+# --- Global Cache ---
+_routing_index_cache = None
+
+def get_routing_index() -> Optional[List[Dict]]:
+    """
+    Loads the routing index from DynamoDB and caches it.
+    Returns None if no index is found, indicating "simple mode".
+    """
+    global _routing_index_cache
+    if _routing_index_cache is not None:
+        return _routing_index_cache
+
+    try:
+        response = db_table.scan(
+            FilterExpression="begins_with(PK, :pk_prefix)",
+            ExpressionAttributeValues={":pk_prefix": "INDEX#"}
+        )
+        items = response.get('Items', [])
+        if not items:
+            _routing_index_cache = [] # Cache empty list to signify dynamic mode is off
+            return None
+
+        # Process items to be usable
+        for item in items:
+            item['centroid'] = np.array(json.loads(item['centroid']))
+
+        _routing_index_cache = items
+        logger.info(f"Successfully loaded and cached routing index with {len(items)} clusters.")
+        return _routing_index_cache
+    except Exception:
+        logger.error("Failed to load routing index from DynamoDB.", exc_info=True)
+        return None # Fail safe to simple mode
+
+def find_closest_cluster(embedding: np.ndarray, routing_index: List[Dict]) -> str:
+    """Finds the most similar cluster for a given embedding."""
+    if not routing_index:
+        return os.environ["S3_VECTORS_INDEX_NAME"]
+
+    best_similarity = -1
+    best_cluster_name = os.environ["S3_VECTORS_INDEX_NAME"] # Default to catch-all
+
+    for cluster in routing_index:
+        centroid = cluster['centroid']
+        # Cosine similarity calculation
+        similarity = np.dot(embedding, centroid) / (np.linalg.norm(embedding) * np.linalg.norm(centroid))
+        if similarity > best_similarity:
+            best_similarity = similarity
+            best_cluster_name = cluster['PK'].split('#', 1)[1]
+
+    return best_cluster_name
+
 
 # --- Main Handler ---
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -64,18 +121,19 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 def scan_and_ingest_documents(filter_keys: List[str]) -> Dict[str, Any]:
     """Scans the output bucket for document folders and ingests new or updated ones."""
     documents_processed = vectors_processed = 0
-    document_list = list(get_document_folders(os.environ["OUTPUT_BUCKET"]))  # Convert iterator to list
+    routing_index = get_routing_index() # Check for dynamic mode
+
+    document_list = list(get_document_folders(os.environ["OUTPUT_BUCKET"]))
     
     for document_folder in document_list:
         try:
             if not is_document_processed(document_folder):
-                vectors_count = process_document_folder(document_folder, filter_keys)
+                vectors_count = process_document_folder(document_folder, filter_keys, routing_index)
                 if vectors_count > 0:
                     documents_processed += 1
                     vectors_processed += vectors_count
         except Exception as e:
             logger.error(f"Error processing document folder {document_folder}: {e}", exc_info=True)
-            # Continue processing other documents
 
     result = {'documents_processed': documents_processed, 'vectors_processed': vectors_processed}
     logger.info(f"Scan complete: {json.dumps(result)}")
@@ -84,12 +142,13 @@ def scan_and_ingest_documents(filter_keys: List[str]) -> Dict[str, Any]:
 def process_s3_event(event: Dict[str, Any], filter_keys: List[str]) -> Dict[str, Any]:
     """Processes a legacy S3 event, targeting a single document folder."""
     total_vectors = 0
+    routing_index = get_routing_index() # Check for dynamic mode
     for record in event['Records']:
-        vector_length = process_document_folder(record['s3']['object']['key'], filter_keys)
+        vector_length = process_document_folder(record['s3']['object']['key'], filter_keys, routing_index)
         total_vectors += vector_length
     return {'documents_processed': len(event['Records']), 'vectors_processed': total_vectors}
 
-def process_document_folder(document_folder: str, filter_keys: List[str]) -> int:
+def process_document_folder(document_folder: str, filter_keys: List[str], routing_index: Optional[List[Dict]]) -> int:
     """Extracts, chunks, embeds, and stores vectors for a single document folder."""
     reader = DocumentReader(os.environ["OUTPUT_BUCKET"], document_folder)
     text_chunks = reader.extract_text_chunks()
@@ -98,6 +157,8 @@ def process_document_folder(document_folder: str, filter_keys: List[str]) -> int
         return 0
 
     vectors = []
+    default_index_name = os.environ["S3_VECTORS_INDEX_NAME"]
+
     for page_data in text_chunks:
         page_metadata = {k: v for k, v in page_data.items() if k != 'chunks'}
         
@@ -106,20 +167,22 @@ def process_document_folder(document_folder: str, filter_keys: List[str]) -> int
                 embedding = bedrock_client.generate_embedding(text=chunk_text, model_id=os.environ["EMBEDDING_MODEL_ID"])
                 if not embedding:
                     continue
-                    
-                # Combine all metadata
+
+                # --- Dynamic Indexing Logic ---
+                target_index = default_index_name
+                if routing_index:
+                    target_index = find_closest_cluster(np.array(embedding), routing_index)
+
                 metadata = {
                     **page_metadata,
                     'text_content': chunk_text,
-                    'chunk_idx': chunk_idx
+                    'chunk_idx': chunk_idx,
+                    'target_index': target_index # Add target index to metadata
                 }
-                
-                # Add classification if enabled
                 
                 if filter_keys:
                     metadata.update(classify_chunk_metadata(chunk_text, filter_keys))
                 
-                # Clean up confidence fields
                 if 'average_confidence' in metadata:
                     metadata['confidence'] = metadata.pop('average_confidence')
                 metadata.pop('min_confidence', None)
@@ -299,36 +362,43 @@ class DocumentReader:
 
 def store_vectors_in_batches(vectors: List[Tuple]):
     """Stores vectors in S3 Vectors using batches and updates the DynamoDB catalog."""
-    if not vectors: 
+    if not vectors:
         return
-    
-    for i in range(0, len(vectors), MAX_VECTORS_PER_BATCH):
-        batch_tuples = vectors[i:i + MAX_VECTORS_PER_BATCH]
-        batch = []
-        
-        for embedding, flattened_data in batch_tuples:
-            vector_key = f"{flattened_data['document_id']}_{flattened_data['page_number']}_{flattened_data['chunk_idx']}"
-            # Remove chunk_idx from metadata since it's now in the key and filter out None values
-            metadata = {k: v for k, v in flattened_data.items() if k != 'chunk_idx' and v is not None}
+
+    # Sort vectors by target index to enable grouping
+    vectors.sort(key=lambda v: v[1]['target_index'])
+
+    # Group vectors by the target index name
+    for index_name, group in groupby(vectors, key=lambda v: v[1]['target_index']):
+        group_vectors = list(group)
+        logger.info(f"Storing {len(group_vectors)} vectors in index '{index_name}'.")
+
+        for i in range(0, len(group_vectors), MAX_VECTORS_PER_BATCH):
+            batch_tuples = group_vectors[i:i + MAX_VECTORS_PER_BATCH]
+            batch = []
+
+            for embedding, flattened_data in batch_tuples:
+                vector_key = f"{flattened_data['document_id']}_{flattened_data['page_number']}_{flattened_data['chunk_idx']}"
+                # Remove fields that are not part of the final metadata
+                metadata = {k: v for k, v in flattened_data.items() if k not in ['chunk_idx', 'target_index'] and v is not None}
+
+                vector_obj = {
+                    "objectId": vector_key,
+                    "vector": embedding,
+                    "metadata": metadata
+                }
+                batch.append(vector_obj)
             
-            # Ensure all metadata va as an uninitialized system-side filterable key
-            vector_obj = {
-                "objectId": vector_key,
-                "vector": embedding,
-                "metadata": metadata
-            }
-            batch.append(vector_obj)
-        
-        try:
-            s3vectors_client.put_vectors(
-                vectorBucketName=os.environ["S3_VECTORS_BUCKET"],
-                indexName=os.environ["S3_VECTORS_INDEX_NAME"],
-                vectors=batch
-            )
-            time.sleep(0.2)  # Rate limiting
-        except Exception:
-            logger.error(f"Failed to store batch starting at index {i}", exc_info=True)
-            raise  # Fail fast on vector storage errors
+            try:
+                s3vectors_client.put_vectors(
+                    vectorBucketName=os.environ["S3_VECTORS_BUCKET"],
+                    indexName=index_name,
+                    vectors=batch
+                )
+                time.sleep(0.2)  # Rate limiting
+            except Exception:
+                logger.error(f"Failed to store batch for index '{index_name}'", exc_info=True)
+                # Continue to next batch/group
     
     # Update catalog after successful storage
     if vectors:

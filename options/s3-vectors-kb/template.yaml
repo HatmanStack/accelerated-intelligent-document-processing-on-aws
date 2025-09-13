@@ -65,6 +65,13 @@ Parameters:
   S3VectorsIngestionScheduleExpression:
     Type: String
     Default: "cron(0/30 * ? * * *)"
+  DiscoveryRebalanceScheduleExpression:
+    Type: String
+    Default: "rate(1 day)"
+  DynamicIndexingThreshold:
+    Type: Number
+    Default: 250000
+    Description: 'Vector count at which to switch from simple to dynamic indexing mode.'
 
 Mappings:
   EmbeddingModelDimensions:
@@ -164,6 +171,7 @@ Resources:
           S3_VECTORS_BUCKET: !Sub "${pStackName}-s3vectors"
           S3_VECTORS_INDEX_NAME: !Ref VectorIndexName
           VECTOR_SIMILARITY_MEASURE: !Ref VectorSimilarityMeasure
+          DYNAMIC_INDEXING_THRESHOLD: !Ref DynamicIndexingThreshold
           EMBEDDING_MODEL_ID: !Ref EmbeddingModelId
           LLM_MODEL_ID: !Ref pKnowledgeBaseModelId
           ALTERNATIVE_LLM_MODEL_ID: !GetAtt CrossRegionKnowledgeBaseModelId.Value
@@ -219,6 +227,7 @@ Resources:
           LOG_LEVEL: !Ref pLogLevel
           STACK_NAME: !Ref pStackName
           OUTPUT_BUCKET: !Ref pOutputBucket
+          DYNAMIC_INDEXING_THRESHOLD: !Ref DynamicIndexingThreshold
           S3_VECTORS_BUCKET: !Sub "${pStackName}-s3vectors"
           S3_VECTORS_CATALOG_TABLE: !Ref pS3VectorsCatalogTableName
           S3_VECTORS_INDEX_NAME: !Ref VectorIndexName
@@ -350,6 +359,7 @@ Resources:
           LOG_LEVEL: !Ref pLogLevel
           S3_VECTORS_BUCKET_NAME: !Sub "${pStackName}-s3vectors"
           S3_VECTORS_INDEX_NAME: !Ref VectorIndexName
+          DYNAMIC_INDEXING_THRESHOLD: !Ref DynamicIndexingThreshold
           QUERY_LAMBDA_FUNCTION_NAME: !Ref S3VectorsQueryFunction
           WORKING_BUCKET: !Ref pWorkingBucket
           LLM_MODEL_ID: !Ref pKnowledgeBaseModelId
@@ -421,6 +431,88 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt S3MetadataFilterAnalyzerSchedule.Arn
+
+  DiscoveryRebalanceFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${pStackName}-S3VecDiscoveryLog"
+      KmsKeyId: !Ref pCustomerManagedEncryptionKeyArn
+      RetentionInDays: !Ref pLogRetentionDays
+
+  DiscoveryRebalanceFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/s3_vectors_discovery_rebalance
+      Handler: index.handler
+      Runtime: python3.12
+      Timeout: 900
+      MemorySize: 2048
+      PermissionsBoundary: !If [pHasPermissionsBoundary, !Ref pPermissionsBoundaryArn, !Ref AWS::NoValue]
+      LoggingConfig:
+        LogGroup: !Ref DiscoveryRebalanceFunctionLogGroup
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref pLogLevel
+          STACK_NAME: !Ref pStackName
+          S3_VECTORS_BUCKET: !Sub "${pStackName}-s3vectors"
+          S3_VECTORS_CATALOG_TABLE: !Ref pS3VectorsCatalogTableName
+          DYNAMIC_INDEXING_THRESHOLD: !Ref DynamicIndexingThreshold
+          EMBEDDING_MODEL_ID: !Ref EmbeddingModelId
+          LIGHTWEIGHT_LLM_MODEL_ID: !Ref LightweightLLMModelId
+          ALTERNATE_LIGHTWEIGHT_LLM_MODEL_ID: !Ref CrossRegionLightweightLLMModelId
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3vectors:*
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:GetItem
+                - dynamodb:BatchWriteItem
+              Resource: !Ref pS3VectorsCatalogTableArn
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource:
+                - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/${EmbeddingModelId}"
+                - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/${LightweightLLMModelId}"
+                - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/${CrossRegionLightweightLLMModelId}"
+                - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/${EmbeddingModelId}"
+                - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/${LightweightLLMModelId}"
+                - !Sub "arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:inference-profile/${CrossRegionLightweightLLMModelId}"
+            - !If
+              - pHasCustomerManagedEncryptionKey
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                  - kms:CreateGrant
+                Resource: !Ref pCustomerManagedEncryptionKeyArn
+              - !Ref AWS::NoValue
+
+  DiscoveryRebalanceSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: !Ref DiscoveryRebalanceScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt DiscoveryRebalanceFunction.Arn
+          Id: "DiscoveryRebalanceTarget"
+
+  DiscoveryRebalancePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DiscoveryRebalanceFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DiscoveryRebalanceSchedule.Arn
 
   S3VectorsQueryLatencyAlarm:
     Type: AWS::CloudWatch::Alarm
